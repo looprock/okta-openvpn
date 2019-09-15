@@ -27,8 +27,7 @@ import urllib3
 
 from okta_pinset import okta_pinset
 
-version = "0.10.0"
-# OktaOpenVPN/0.10.0 (Darwin 12.4.0) CPython/2.7.5
+version = "0.10.1"
 user_agent = ("OktaOpenVPN/{version} "
               "({system} {system_version}) "
               "{implementation}/{python_version}").format(
@@ -43,11 +42,11 @@ syslog = logging.handlers.SysLogHandler()
 syslog_fmt = "%(module)s-%(processName)s[%(process)d]: %(name)s: %(message)s"
 syslog.setFormatter(logging.Formatter(syslog_fmt))
 log.addHandler(syslog)
-# # Uncomment to enable logging to STDERR
-# errlog = logging.StreamHandler()
-# errlog.setFormatter(logging.Formatter(syslog_fmt))
-# log.addHandler(errlog)
-# # Uncomment to enable logging to a file
+# Uncomment to enable logging to STDERR
+errlog = logging.StreamHandler()
+errlog.setFormatter(logging.Formatter(syslog_fmt))
+log.addHandler(errlog)
+#  Uncomment to enable logging to a file
 # filelog = logging.FileHandler('/tmp/okta_openvpn.log')
 # filelog.setFormatter(logging.Formatter(syslog_fmt))
 # log.addHandler(filelog)
@@ -96,7 +95,7 @@ class PublicKeyPinsetConnectionPool(urllib3.HTTPSConnectionPool):
 
 class OktaAPIAuth(object):
     def __init__(self, okta_url, okta_token,
-                 username, password, client_ipaddr,
+                 username, password, client_ipaddr, allowed_groups,
                  assert_pinset=None):
         passcode_len = 6
         self.okta_url = None
@@ -104,6 +103,7 @@ class OktaAPIAuth(object):
         self.username = username
         self.password = password
         self.client_ipaddr = client_ipaddr
+        self.allowed_groups = allowed_groups
         self.passcode = None
         self.okta_urlparse = urlparse.urlparse(okta_url)
         if assert_pinset is None:
@@ -125,7 +125,7 @@ class OktaAPIAuth(object):
             ca_certs=certifi.where(),
         )
 
-    def okta_req(self, path, data):
+    def okta_req(self, path, data=None):
         ssws = "SSWS {token}".format(token=self.okta_token)
         headers = {
             'user-agent': user_agent,
@@ -134,13 +134,38 @@ class OktaAPIAuth(object):
             'authorization': ssws,
             }
         url = "{base}/api/v1{path}".format(base=self.okta_url, path=path)
-        req = self.pool.urlopen(
+        if data:
+          req = self.pool.urlopen(
             'POST',
             url,
             headers=headers,
             body=json.dumps(data)
-        )
+          )
+        else:
+          req = self.pool.urlopen(
+            'GET',
+            url,
+            headers=headers
+          )
         return json.loads(req.data)
+
+    def check_groups(self, allowed_groups):
+        if allowed_groups:
+            log.info("Found groups. Validating against:")
+            log.info(allowed_groups)
+            group_result = False
+            path = "/users/%s" % (self.username)
+            user_data = self.okta_req(path)
+            path = "/users/%s/groups" % (user_data['id'])
+            group_data = self.okta_req(path)
+            for i in group_data:
+                if i['profile']['name'] in self.allowed_groups:
+                    log.info("found allowed group: %s" % (i['profile']['name']))
+                    group_result = True
+        else:
+            log.info("No groups to validate")
+            group_result = True
+        return group_result
 
     def preauth(self):
         path = "/authn"
@@ -183,6 +208,14 @@ class OktaAPIAuth(object):
             rv = self.preauth()
         except Exception, s:
             log.error('Error connecting to the Okta API: %s', s)
+            return False
+        try:
+            group_res = self.check_groups(self.allowed_groups)
+        except Exception, s:
+            log.error('Error connecting to the Okta API: %s', s)
+            return False
+        if not group_res:
+            log.error("Username %s not a member of an allowed group!" % (username))
             return False
         if 'errorCauses' in rv:
             msg = rv['errorSummary']
@@ -238,6 +271,7 @@ class OktaOpenVPNValidator(object):
         self.okta_config = {}
         self.username_suffix = None
         self.always_trust_username = False
+        self.allowed_groups = None
 
     def read_configuration_file(self):
         cfg_path_defaults = [
@@ -248,6 +282,7 @@ class OktaOpenVPNValidator(object):
         parser_defaults = {
             'AllowUntrustedUsers': self.always_trust_username,
             'UsernameSuffix': self.username_suffix,
+            'AllowedGroups': self.allowed_groups,
             }
         if self.config_file:
             cfg_path = []
@@ -262,6 +297,12 @@ class OktaOpenVPNValidator(object):
                         'okta_url': cfg.get('OktaAPI', 'Url'),
                         'okta_token': cfg.get('OktaAPI', 'Token'),
                         }
+                    trusted_groups = cfg.get('OktaAPI', 'AllowedGroups')
+                    tmp_groups = []
+                    if trusted_groups:
+                        for group in trusted_groups.split(','):
+                            tmp_groups.append(group.strip())
+                    self.site_config['allowed_groups'] = tmp_groups
                     always_trust_username = cfg.get(
                         'OktaAPI',
                         'AllowUntrustedUsers')
@@ -312,6 +353,7 @@ class OktaOpenVPNValidator(object):
             'username': username,
             'password': password,
             'client_ipaddr': client_ipaddr,
+            'allowed_groups': self.site_config['allowed_groups'],
         }
         assert_pin = self.env.get('assert_pin')
         if assert_pin:
