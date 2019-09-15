@@ -18,3 +18,5 @@ Token:
 ## NOT RECCOMMENDED FOR PRODUCTION ENVIRONMENTS
 ## (Example below)
 # AllowUntrustedUsers: True
+## Configure what groups are allowed to connect to server
+# AllowedGroups: vpnusers, developers
