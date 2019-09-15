@@ -27,7 +27,7 @@ import urllib3
 
 from okta_pinset import okta_pinset
 
-version = "0.10.1"
+version = "0.10.0-groups"
 user_agent = ("OktaOpenVPN/{version} "
               "({system} {system_version}) "
               "{implementation}/{python_version}").format(
